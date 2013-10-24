@@ -1,0 +1,24 @@
+PATH
+  remote: .
+  specs:
+    websocket-td (0.0.2)
+      websocket (~> 1.1.1)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    json (1.8.0)
+    rdoc (4.0.1)
+      json (~> 1.4)
+    shoulda (2.11.3)
+    test-unit (2.5.5)
+    websocket (1.1.1)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rdoc (> 0)
+  shoulda (~> 2.11.3)
+  test-unit (>= 2.5.5)
+  websocket-td!
