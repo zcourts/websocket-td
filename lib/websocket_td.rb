@@ -1,6 +1,6 @@
 require 'websocket'
 require 'socket'
-require '../lib/errors'
+require File.dirname(__FILE__) + '/errors'
 
 module WebsocketTD
   class Websocket
