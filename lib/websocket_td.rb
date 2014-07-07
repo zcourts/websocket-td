@@ -66,8 +66,17 @@ module WebsocketTD
       if IS_WINDOWS
         do_send(data, type) #fork not supported on windows
       else
-        fork do
+        pid = fork do
           do_send(data, type)
+        end
+
+        begin
+          Timeout.timeout(20) do
+            Process.wait
+          end
+        rescue Timeout::Error
+          Process.kill 9, pid
+          Process.wait pid
         end
       end
     end
