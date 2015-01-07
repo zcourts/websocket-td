@@ -66,9 +66,10 @@ module WebsocketTD
       if IS_WINDOWS
         do_send(data, type) #fork not supported on windows
       else
-        fork do
+        pid = fork do
           do_send(data, type)
         end
+        Process.detach(pid)
       end
     end
 
