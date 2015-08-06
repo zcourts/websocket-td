@@ -107,7 +107,7 @@ module WebsocketTD
             init_messaging
             #don't stop reading until after init_message to guarantee @read_thread != nil for a successful connection
             reading = false
-            @opened =true
+            @opened = true
             fire_on_open
           else
             #do non blocking reads on headers - 1 byte at a time
@@ -140,30 +140,21 @@ module WebsocketTD
 
     #Use one thread to perform blocking read on the socket
     def init_messaging
-      if @read_thread == nil
-        @read_thread = Thread.new do
-          read_loop
-        end
-      end
+      @read_thread ||= Thread.new { read_loop }
     end
 
     def read_loop
       frame = WebSocket::Frame::Incoming::Client.new(:version => @handshake.version)
       while @active
-        if @socket.closed?
-          @active = false
-          fire_on_close
-        else
-          begin
-            frame << @socket.readpartial(@read_buffer)
-            if (message = frame.next) != nil
-              #"text", "binary", "ping", "pong" and "close" (according to websocket/base.rb)
-              determine_message_type(message)
-            end
-          rescue EOFError => eof
-            fire_on_error(eof)
-            fire_on_close
+        begin
+          frame << @socket.readpartial(@read_buffer)
+          if (message = frame.next) != nil
+            #"text", "binary", "ping", "pong" and "close" (according to websocket/base.rb)
+            determine_message_type(message)
           end
+        rescue Exception => e
+          fire_on_error(e)
+          fire_on_close if @socket.closed?
         end
       end
     end
@@ -218,7 +209,7 @@ module WebsocketTD
       @active = false
       @closed = true
       @on_close.call(message) unless @on_close == nil
-      @socket.close
+      @socket.close unless @socket.closed?
     end
 
   end # class
