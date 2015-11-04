@@ -148,7 +148,7 @@ module WebsocketTD
       while @active
         begin
           frame << @socket.readpartial(@read_buffer)
-          if (message = frame.next) != nil
+          while message = frame.next
             #"text", "binary", "ping", "pong" and "close" (according to websocket/base.rb)
             determine_message_type(message)
           end
