@@ -152,6 +152,7 @@ module WebsocketTD
             #"text", "binary", "ping", "pong" and "close" (according to websocket/base.rb)
             determine_message_type(message)
           end
+          fire_on_error WsProtocolError.new(frame.error) if frame.error?
         rescue Exception => e
           fire_on_error(e)
           fire_on_close if @socket.closed?
