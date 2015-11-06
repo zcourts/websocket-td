@@ -10,6 +10,7 @@ module WebsocketTD
       auto_pong: true,
       read_buffer_size: 2048,
       reconnect: false,
+      secure: false,
       retry_time: 1
     }
 
@@ -25,16 +26,27 @@ module WebsocketTD
     # +opts+:: Additional options:
     #   :reconnect - if true, it will try to reconnect
     #   :retry_time - how often should retries happen when reconnecting [default = 1s]
-    def initialize(host, path, query, secure = false, port = nil, opts={})
-      port ||= secure ? 443 : 80
+    # Alternatively it can be called with a single hash where key names as symbols are the same as param names
+    def initialize(host, path = '', query = '', secure = false, port = nil, opts={})
+
+      # Initializing with a single hash
+      if host.kind_of? Hash
+        opts = host
+        @host    = opts.delete :host
+        @port    = opts.delete :port
+        @path    = opts.delete(:path).to_s
+        @query   = opts.delete(:query).to_s
+        @secure  = opts.delete :secure
+      else # initializing with a params list
+        @host   = host
+        @port   = port
+        @secure = secure
+        @path   = path
+        @query  = query
+      end
 
       @opts = DEFAULT_OPTS.merge opts
-
-      @host   = host
-      @port   = port
-      @secure = secure
-      @path   = path
-      @query  = query
+      @port ||= @secure ? 443 : 80
 
       @auto_pong   = opts[:auto_pong]
       @closed      = false
