@@ -155,7 +155,7 @@ module WebsocketTD
           fire_on_error WsProtocolError.new(frame.error) if frame.error?
         rescue Exception => e
           fire_on_error(e)
-          fire_on_close if @socket.closed?
+          fire_on_close if @socket.closed? || @socket.eof?
         end
       end
     end
