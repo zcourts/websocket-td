@@ -161,7 +161,7 @@ module WebsocketTD
               end
             end
           end
-        rescue IO::WaitReadable => e
+        rescue IO::WaitReadable
           # ignored
         rescue IO::WaitWritable
           # ignored
