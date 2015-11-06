@@ -13,24 +13,30 @@ module WebsocketTD
     @read_thread = nil
     @auto_pong   = true
 
+    DEFAULT_OPTS = {
+      reconnect: false,
+      retry_time: 1
+    }
+
     ##
     # +host+:: Host of request. Required if no :url param was provided.
     # +path+:: Path of request. Should start with '/'. Default: '/'
     # +query+:: Query for request. Should be in format "aaa=bbb&ccc=ddd"
     # +secure+:: Defines protocol to use. If true then wss://, otherwise ws://. This option will not change default port - it should be handled by programmer.
     # +port+:: Port of request. Default: nil
-    def initialize(host, path, query, secure = false, port = nil)
-      if port == nil
-        port = secure ? 443 : 80
-      end
+    # +opts+:: Additional options:
+    #   :reconnect - if true, it will try to reconnect
+    #   :retry_time - how often should retries happen when reconnecting [default = 1s]
+    def initialize(host, path, query, secure = false, port = nil, opts={})
+      port ||= secure ? 443 : 80
 
-      @handshake = WebSocket::Handshake::Client.new({
-                                                        :host   => host,
-                                                        :port   => port,
-                                                        :secure => secure,
-                                                        :path   => path,
-                                                        :query  => query
-                                                    })
+      @opts = DEFAULT_OPTS.merge opts
+
+      @host   = host
+      @port   = port
+      @secure = secure
+      @path   = path
+      @query  = query
 
       @read_buffer = 2048
       @auto_pong   = true
@@ -43,14 +49,7 @@ module WebsocketTD
       @on_error   = lambda { |error|}
       @on_message = lambda { |message|}
 
-      tcp_socket = TCPSocket.new(host, port)
-      if secure
-        @socket = OpenSSL::SSL::SSLSocket.new(tcp_socket)
-        @socket.connect
-      else
-        @socket = tcp_socket
-      end
-      perform_handshake
+      connect
     end
 
     attr_reader :read_thread, :read_buffer, :socket, :active, :auto_pong
@@ -95,7 +94,42 @@ module WebsocketTD
 
 #protected methods after this
     protected
+
+    def connect
+      tcp_socket = TCPSocket.new(@host, @port)
+      if @secure
+        @socket = OpenSSL::SSL::SSLSocket.new(tcp_socket)
+        @socket.connect
+      else
+        @socket = tcp_socket
+      end
+      perform_handshake
+    end
+
+    def reconnect
+      @closed = false
+      @opened = false
+
+      until @opened
+        begin
+          connect
+        rescue Errno::ECONNREFUSED
+          sleep @opts[:retry_time]
+        rescue Exception => e
+          fire_on_error e
+        end
+      end
+    end
+
     def perform_handshake
+      @handshake = WebSocket::Handshake::Client.new({
+        :host   => @host,
+        :port   => @port,
+        :secure => @secure,
+        :path   => @path,
+        :query  => @query
+      })
+
       @socket.write @handshake.to_s
       buf     = ''
       headers = ''
@@ -211,6 +245,8 @@ module WebsocketTD
       @closed = true
       @on_close.call(message) unless @on_close == nil
       @socket.close unless @socket.closed?
+
+      reconnect if @opts[:reconnect]
     end
 
   end # class
