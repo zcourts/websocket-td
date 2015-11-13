@@ -187,8 +187,8 @@ module WebsocketTD
         rescue Exception => e
           fire_on_error(e)
           if @socket.closed? || @socket.eof?
-            fire_on_close
             @read_thread = nil
+            fire_on_close
             break
           end
         end
