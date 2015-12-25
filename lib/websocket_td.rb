@@ -5,13 +5,17 @@ require File.dirname(__FILE__) + '/errors'
 module WebsocketTD
   class Websocket
     IS_WINDOWS   = (RbConfig::CONFIG['host_os'] =~ /mswin|mingw|cygwin/)
-    # max length bytes to try to read from a socket per attempt
-    @read_buffer = 0
-    #true when reading data from a socket
-    @active      = false
-    #the tread currently being used to read data
-    @read_thread = nil
-    @auto_pong   = true
+
+    DEFAULT_OPTS = {
+      auto_pong: true,
+      read_buffer_size: 2048,
+      reconnect: false,
+      secure: false,
+      retry_time: 1
+    }
+
+    attr_reader :socket, :read_thread,  :protocol_version
+    attr_accessor :auto_pong, :on_ping, :on_error, :on_message
 
     ##
     # +host+:: Host of request. Required if no :url param was provided.
@@ -19,21 +23,32 @@ module WebsocketTD
     # +query+:: Query for request. Should be in format "aaa=bbb&ccc=ddd"
     # +secure+:: Defines protocol to use. If true then wss://, otherwise ws://. This option will not change default port - it should be handled by programmer.
     # +port+:: Port of request. Default: nil
-    def initialize(host, path, query, secure = false, port = nil)
-      if port == nil
-        port = secure ? 443 : 80
+    # +opts+:: Additional options:
+    #   :reconnect - if true, it will try to reconnect
+    #   :retry_time - how often should retries happen when reconnecting [default = 1s]
+    # Alternatively it can be called with a single hash where key names as symbols are the same as param names
+    def initialize(host, path = '', query = '', secure = false, port = nil, opts={})
+
+      # Initializing with a single hash
+      if host.kind_of? Hash
+        opts = host
+        @host    = opts.delete :host
+        @port    = opts.delete :port
+        @path    = opts.delete(:path).to_s
+        @query   = opts.delete(:query).to_s
+        @secure  = opts.delete :secure
+      else # initializing with a params list
+        @host   = host
+        @port   = port
+        @secure = secure
+        @path   = path
+        @query  = query
       end
 
-      @handshake = WebSocket::Handshake::Client.new({
-                                                        :host   => host,
-                                                        :port   => port,
-                                                        :secure => secure,
-                                                        :path   => path,
-                                                        :query  => query
-                                                    })
+      @opts = DEFAULT_OPTS.merge opts
+      @port ||= @secure ? 443 : 80
 
-      @read_buffer = 2048
-      @auto_pong   = true
+      @auto_pong   = opts[:auto_pong]
       @closed      = false
       @opened      = false
 
@@ -43,18 +58,8 @@ module WebsocketTD
       @on_error   = lambda { |error|}
       @on_message = lambda { |message|}
 
-      tcp_socket = TCPSocket.new(host, port)
-      if secure
-        @socket = OpenSSL::SSL::SSLSocket.new(tcp_socket)
-        @socket.connect
-      else
-        @socket = tcp_socket
-      end
-      perform_handshake
+      connect
     end
-
-    attr_reader :read_thread, :read_buffer, :socket, :active, :auto_pong
-    attr_writer :read_buffer, :auto_pong, :on_ping, :on_error, :on_message # :on_open, :on_close
 
     ##
     #Send the data given by the data param
@@ -93,40 +98,66 @@ module WebsocketTD
       end
     end
 
-#protected methods after this
     protected
-    def perform_handshake
-      @socket.write @handshake.to_s
-      buf     = ''
-      headers = ''
-      reading = true
 
-      while reading
+    def connect
+      tcp_socket = TCPSocket.new(@host, @port)
+      if @secure
+        @socket = OpenSSL::SSL::SSLSocket.new(tcp_socket)
+        @socket.connect
+      else
+        @socket = tcp_socket
+      end
+      perform_handshake
+    end
+
+    def reconnect
+      @closed = false
+      @opened = false
+
+      until @opened
         begin
-          if @handshake.finished?
-            init_messaging
-            #don't stop reading until after init_message to guarantee @read_thread != nil for a successful connection
-            reading = false
+          connect
+        rescue Errno::ECONNREFUSED
+          sleep @opts[:retry_time]
+        rescue Exception => e
+          fire_on_error e
+        end
+      end
+    end
+
+    def perform_handshake
+      handshake = WebSocket::Handshake::Client.new({
+        :host   => @host,
+        :port   => @port,
+        :secure => @secure,
+        :path   => @path,
+        :query  => @query
+      })
+
+      @socket.write handshake.to_s
+      buf = ''
+
+      loop do
+        begin
+          if handshake.finished?
+            @protocol_version = handshake.version
+            @active = true
             @opened = true
+            init_messaging
             fire_on_open
+            break
           else
-            #do non blocking reads on headers - 1 byte at a time
+            # do non blocking reads on headers - 1 byte at a time
             buf.concat(@socket.read_nonblock(1))
-            #\r\n\r\n i.e. a blank line, separates headers from body
-            idx = buf.index(/\r\n\r\n/m)
-            if idx != nil
-              headers = buf.slice!(0..idx + 8) #+8 to include the blank line separator
-              @handshake << headers            #parse headers
+            # \r\n\r\n i.e. a blank line, separates headers from body
+            if idx = buf.index(/\r\n\r\n/m)
+              handshake << buf # parse headers
 
-              if @handshake.finished? && !@handshake.valid?
+              if handshake.finished? && !handshake.valid?
                 fire_on_error(ConnectError.new('Server responded with an invalid handshake'))
-                fire_on_close() #close if handshake is not valid
-              end
-
-              if @handshake.finished?
-                @active = true
-                buf     = '' #clean up
-                headers = ''
+                fire_on_close #close if handshake is not valid
+                break
               end
             end
           end
@@ -138,38 +169,42 @@ module WebsocketTD
       end
     end
 
-    #Use one thread to perform blocking read on the socket
+    # Use one thread to perform blocking read on the socket
     def init_messaging
       @read_thread ||= Thread.new { read_loop }
     end
 
     def read_loop
-      frame = WebSocket::Frame::Incoming::Client.new(:version => @handshake.version)
+      frame = WebSocket::Frame::Incoming::Client.new(:version => @protocol_version)
       while @active
         begin
-          frame << @socket.readpartial(@read_buffer)
-          if (message = frame.next) != nil
+          frame << @socket.readpartial(@opts[:read_buffer_size])
+          while message = frame.next
             #"text", "binary", "ping", "pong" and "close" (according to websocket/base.rb)
             determine_message_type(message)
           end
+          fire_on_error WsProtocolError.new(frame.error) if frame.error?
         rescue Exception => e
           fire_on_error(e)
-          fire_on_close if @socket.closed?
+          if @socket.closed? || @socket.eof?
+            @read_thread = nil
+            fire_on_close
+            break
+          end
         end
       end
     end
 
     def determine_message_type(message)
-      if message.type == :binary || message.type == :text
+      case message.type
+      when :binary, :text
         fire_on_message(message)
-      elsif message.type == :ping
-        if @auto_pong
-          send(message.data, :pong)
-        end
+      when :ping
+        send(message.data, :pong) if @auto_pong
         fire_on_ping(message)
-      elsif message.type == :pong
+      when :pong
         fire_on_error(WsProtocolError.new('Invalid type pong received'))
-      elsif message.type == :close
+      when :close
         fire_on_close(message)
       else
         fire_on_error(BadMessageTypeError.new("An unknown message type was received #{message.data}"))
@@ -177,7 +212,7 @@ module WebsocketTD
     end
 
     def do_send(data, type=:text)
-      frame = WebSocket::Frame::Outgoing::Client.new(:version => @handshake.version, :data => data, :type => type)
+      frame = WebSocket::Frame::Outgoing::Client.new(:version => @protocol_version, :data => data, :type => type)
       begin
         @socket.write frame #_nonblock
         @socket.flush
@@ -190,26 +225,28 @@ module WebsocketTD
     end
 
     def fire_on_ping(message)
-      @on_ping.call(message) unless @on_ping == nil
+      @on_ping.call(message) if @on_ping
     end
 
     def fire_on_message(message)
-      @on_message.call(message) unless @on_message == nil
+      @on_message.call(message) if @on_message
     end
 
     def fire_on_open
-      @on_open.call() unless @on_open == nil
+      @on_open.call() if @on_open
     end
 
     def fire_on_error(error)
-      @on_error.call(error) unless @on_error == nil
+      @on_error.call(error) if @on_error
     end
 
     def fire_on_close(message = nil)
       @active = false
       @closed = true
-      @on_close.call(message) unless @on_close == nil
+      @on_close.call(message) if @on_close
       @socket.close unless @socket.closed?
+
+      reconnect if @opts[:reconnect]
     end
 
   end # class

@@ -7,7 +7,7 @@ Both ws and wss protocols supported.
 Install Instructions
 --------------------
 
-sudo gem install websocket-td
+gem install websocket-td
 
 Dependencies
 ------------
